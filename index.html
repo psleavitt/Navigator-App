@@ -634,21 +634,21 @@ async function saveEntry(toCloud){
 $('saveBtn').onclick = ()=>saveEntry(true);
 
 /* ---------- First Light adapter ---------- */
-function unwrap(raw){
+const DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+function unwrapRoot(raw){
   let o = raw, depth = 0;
   while(o && typeof o === 'object' && depth < 4){
-    if(findHabits(o)) return o;
+    if((Array.isArray(o.goals) && o.goals.length) || findHabits(o)) return o;
     const inner = o.data || o.state || o.payload || o.appData || o.app;
     if(inner && typeof inner === 'object'){ o = inner; depth++; } else break;
   }
-  return findHabits(o) ? o : null;
+  return (o && typeof o === 'object') ? o : null;
 }
 function findHabits(o){
   if(!o || typeof o !== 'object') return null;
   for(const k of ['habits','goals','items','trackers','tasks']){
     if(Array.isArray(o[k]) && o[k].length && typeof o[k][0] === 'object') return o[k];
   }
-  // shape: {Light:[...], Learn:[...]} — arrays keyed by category
   const cats = Object.keys(o).filter(k=>Array.isArray(o[k]) && o[k].length && typeof o[k][0]==='object' && (o[k][0].name||o[k][0].title));
   if(cats.length >= 2){
     return cats.flatMap(c => o[c].map(h => ({...h, category: h.category || c})));
@@ -657,27 +657,108 @@ function findHabits(o){
 }
 function habitName(h){ return h.name || h.title || h.label || String(h.id||'habit'); }
 function habitId(h){ return String(h.id ?? h.uid ?? h.key ?? habitName(h)); }
+function normCat(s){
+  const known = ['Light','Learn','Live','Love'].find(k => k.toLowerCase() === String(s).trim().toLowerCase());
+  return known || (String(s).charAt(0).toUpperCase() + String(s).slice(1));
+}
 function habitCat(h){
   const c = h.category || h.cat || h.group || h.type || h.goalCategory || 'Other';
-  const s = String(c).trim();
-  const known = ['Light','Learn','Live','Love'].find(k => k.toLowerCase() === s.toLowerCase());
-  return known || (s.charAt(0).toUpperCase() + s.slice(1));
+  return normCat(c);
 }
-function adaptFirstLight(raw){
-  const root = unwrap(raw);
-  if(!root) return null;
+function resolveCategories(cats){
+  const map = {};
+  if(Array.isArray(cats)){
+    cats.forEach((c,i)=>{
+      if(typeof c === 'string') map[c] = c;
+      else if(c && typeof c === 'object') map[String(c.id ?? c.key ?? c.uid ?? i)] = c.name || c.title || c.label || String(c.id ?? i);
+    });
+  } else if(cats && typeof cats === 'object'){
+    for(const k in cats){ const v = cats[k]; map[k] = typeof v === 'string' ? v : (v && (v.name||v.title)) || k; }
+  }
+  return map;
+}
+/* Walk any plausible log container and emit (goalId, date, value) */
+function eachLog(logs, cb){
+  if(!logs) return;
+  if(Array.isArray(logs)){
+    logs.forEach(r=>{
+      if(!r || typeof r !== 'object') return;
+      const date = r.date ?? r.day ?? r.d ?? r.ts ?? r.timestamp ?? r.createdAt ?? r.created_at;
+      const id = r.goalId ?? r.goal_id ?? r.goal ?? r.habitId ?? r.habit_id ?? r.gid ?? r.itemId ?? r.id;
+      const val = r.value ?? r.count ?? r.amount ?? r.qty ?? r.done ?? r.checked ?? r.completed ?? true;
+      if(date != null && id != null) cb(String(id), date, val);
+    });
+    return;
+  }
+  if(typeof logs !== 'object') return;
+  for(const k in logs){
+    const v = logs[k];
+    if(DATE_RE.test(k)){ /* keyed by date */
+      if(Array.isArray(v)) v.forEach(x => {
+        if(x && typeof x === 'object') cb(String(x.goalId ?? x.goal ?? x.habitId ?? x.id), k, x.value ?? x.count ?? x.amount ?? x.done ?? true);
+        else cb(String(x), k, true);
+      });
+      else if(v && typeof v === 'object') for(const id in v) cb(String(id), k, v[id]);
+    } else { /* keyed by goal id */
+      if(Array.isArray(v)) v.forEach(x => {
+        if(typeof x === 'string' || typeof x === 'number') cb(String(k), x, true);
+        else if(x && typeof x === 'object') cb(String(k), x.date ?? x.day ?? x.d ?? x.ts, x.value ?? x.count ?? x.amount ?? x.done ?? x.checked ?? true);
+      });
+      else if(v && typeof v === 'object') for(const d in v) cb(String(k), d, v[d]);
+    }
+  }
+}
+/* Native First Light schema: goals + checkLogs / tallyLogs / amountLogs / listItems + categories */
+function adaptFLNative(root){
+  const catMap = resolveCategories(root.categories);
+  const goals = root.goals.filter(g => g && typeof g === 'object' && !(g.archived || g.deleted || g.isArchived || g.active === false));
+  if(!goals.length) return null;
+  const habits = goals.map(g => {
+    const rawCat = g.category ?? g.categoryId ?? g.category_id ?? g.cat ?? g.group ?? g.categoryKey;
+    const catName = rawCat != null ? (catMap[String(rawCat)] || String(rawCat)) : 'Other';
+    return {id: habitId(g), name: habitName(g), category: normCat(catName), _raw: g};
+  });
+  const targets = {};
+  goals.forEach(g => {
+    const t = g.target ?? g.targetValue ?? g.target_value ?? g.goalValue ?? g.dailyTarget ?? g.targetCount ?? g.targetAmount;
+    const n = typeof t === 'number' ? t : parseFloat(t);
+    if(!isNaN(n) && n > 0) targets[habitId(g)] = n;
+  });
+  const byDate = {};
+  const consider = (id, date, val, kind) => {
+    const d = String(date).slice(0,10);
+    if(!DATE_RE.test(d)) return;
+    let done;
+    if(kind === 'check'){ done = !!val && val !== 0 && val !== '0'; }
+    else {
+      let num = typeof val === 'number' ? val
+        : (val && typeof val === 'object') ? (val.value ?? val.count ?? val.amount)
+        : (val === true ? 1 : parseFloat(val));
+      if(typeof num === 'number' && !isNaN(num)){
+        const t = targets[id];
+        done = t ? num >= t : num > 0;
+      } else done = !!val;
+    }
+    if(done)(byDate[d] = byDate[d] || new Set()).add(String(id));
+  };
+  eachLog(root.checkLogs,  (i,d,v)=>consider(i,d,v,'check'));
+  eachLog(root.tallyLogs,  (i,d,v)=>consider(i,d,v,'tally'));
+  eachLog(root.amountLogs, (i,d,v)=>consider(i,d,v,'amount'));
+  eachLog(root.listItems,  (i,d,v)=>consider(i,d,v,'check'));
+  if(Object.keys(byDate).length === 0) return {habits, byDate, empty:true};
+  return {habits, byDate};
+}
+/* Generic fallback for other shapes */
+function adaptGeneric(root){
   const habitsRaw = findHabits(root);
+  if(!habitsRaw) return null;
   const habits = habitsRaw.map(h => ({id:habitId(h), name:habitName(h), category:habitCat(h), _raw:h}));
-
-  // completion lookup: date "YYYY-MM-DD" -> Set(habitId)
   const byDate = {};
   const mark = (date, id) => {
     const d = String(date).slice(0,10);
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    if(!DATE_RE.test(d)) return;
     (byDate[d] = byDate[d] || new Set()).add(String(id));
   };
-
-  // A) top-level map: completions / log / history / checkins
   for(const k of ['completions','log','history','checkins','records','days']){
     const m = root[k];
     if(m && typeof m === 'object' && !Array.isArray(m)){
@@ -689,7 +770,6 @@ function adaptFirstLight(raw){
     }
     if(Array.isArray(m)) m.forEach(r => { if(r && r.date) mark(r.date, r.habitId ?? r.habit ?? r.id); });
   }
-  // B) per-habit history
   habits.forEach(h => {
     const src = h._raw;
     for(const k of ['history','completions','log','dates','days','completedDates','checkins']){
@@ -698,9 +778,37 @@ function adaptFirstLight(raw){
       else if(v && typeof v === 'object') for(const date in v){ if(v[date]) mark(date, h.id); }
     }
   });
-
   if(Object.keys(byDate).length === 0) return {habits, byDate, empty:true};
   return {habits, byDate};
+}
+function adaptFirstLight(raw){
+  const root = unwrapRoot(raw);
+  if(!root) return null;
+  if(Array.isArray(root.goals) && root.goals.length){
+    const native = adaptFLNative(root);
+    if(native && !native.empty) return native;
+    const generic = adaptGeneric(root);
+    return (generic && !generic.empty) ? generic : (native || generic);
+  }
+  return adaptGeneric(root);
+}
+/* Compact structural sample for diagnostics */
+function sampleOf(v){
+  try{
+    if(Array.isArray(v)) return `array(${v.length}) first=${JSON.stringify(v[0]).slice(0,110)}`;
+    if(v && typeof v === 'object'){ const k = Object.keys(v)[0]; return `object, "${k}" \u2192 ${JSON.stringify(v[k]).slice(0,90)}`; }
+    return String(v).slice(0,60);
+  }catch(e){ return '?'; }
+}
+function shapeReport(raw){
+  const r = unwrapRoot(raw) || raw;
+  if(!r || typeof r !== 'object') return '';
+  const parts = [];
+  if(Array.isArray(r.goals) && r.goals[0]) parts.push(`goals[0] keys: ${Object.keys(r.goals[0]).join(', ')}`);
+  for(const k of ['checkLogs','tallyLogs','amountLogs','listItems','completions','history']){
+    if(r[k] != null) parts.push(`${k}: ${sampleOf(r[k])}`);
+  }
+  return parts.join(' \u2022 ');
 }
 
 /* ---------- snapshot computations ---------- */
@@ -1032,7 +1140,7 @@ $('testFL').onclick = async ()=>{
     } else {
       const keys = raw && typeof raw==='object' ? Object.keys(raw).join(', ') : typeof raw;
       st.className='status err';
-      st.textContent = `Connected, but the adapter couldn\u2019t read the data shape. Top-level keys found: ${keys}. Send me this list and I\u2019ll adjust the adapter.`;
+      st.textContent = `Connected, but the adapter couldn\u2019t read the data shape. Top-level keys: ${keys}. Structure: ${shapeReport(raw)} \u2014 send me this and I\u2019ll adjust the adapter.`;
     }
   }catch(e){ st.className='status err'; st.textContent = e.message; }
 };
