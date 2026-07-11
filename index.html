@@ -18,9 +18,10 @@
   --ink:#0E1B2C;          /* chart-room background */
   --chart:#16283E;        /* panels */
   --chart-2:#1D3350;      /* panel borders / raised */
-  --paper:#EDF1F4;        /* writing sheet */
-  --paper-line:#D7E0E7;   /* faint grid on sheet */
-  --paper-ink:#22333F;    /* text on sheet */
+  --paper:#EDF1F4;        /* light accents on dark panels */
+  --tan:#CDB086;          /* journal sheet */
+  --tan-light:#E9DCBE;    /* entry fields on sheet */
+  --tan-ink:#3B2F1D;      /* text on sheet */
   --brass:#C9A227;        /* accent */
   --brass-soft:#E3C766;
   --signal:#E1604F;       /* needs attention */
@@ -81,53 +82,52 @@ main{max-width:1180px;margin:14px auto 60px;padding:0 22px}
 .view.on{display:block}
 
 /* ---------- this week layout ---------- */
-.week-grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:22px;align-items:start}
-@media (max-width:900px){.week-grid{grid-template-columns:1fr}}
+.week-grid{display:flex;flex-direction:column;gap:24px}
 
-/* the writing sheet — light chart paper with faint latitude lines */
+/* the writing sheet — warm tan with rounded gold entry boxes */
 .sheet{
-  background:
-    repeating-linear-gradient(to bottom, transparent 0 31px, var(--paper-line) 31px 32px),
-    var(--paper);
-  color:var(--paper-ink);
+  background:linear-gradient(160deg, #D4B98F, var(--tan));
+  color:var(--tan-ink);
   border-radius:var(--radius);
   padding:30px 34px 34px;
+  max-width:860px;
   box-shadow:0 18px 50px rgba(0,0,0,.45);
 }
 @media (max-width:600px){.sheet{padding:22px 18px 26px}}
 .sheet h2{
-  font-family:var(--display);font-size:22px;font-weight:400;color:#17242E;
+  font-family:var(--display);font-size:22px;font-weight:400;color:#2E2412;
   display:flex;align-items:baseline;gap:10px;margin-bottom:4px;
 }
-.sheet .weekline{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:#6C808F;text-transform:uppercase;margin-bottom:20px}
+.sheet .weekline{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:#7A6537;text-transform:uppercase;margin-bottom:20px}
 .prompt{margin-top:22px}
 .prompt label{
-  display:block;font-style:italic;font-size:18.5px;color:#33475A;margin-bottom:8px;font-weight:500;
+  display:block;font-style:italic;font-size:18.5px;color:#4A3A1E;margin-bottom:9px;font-weight:500;
 }
 .prompt textarea{
-  width:100%;min-height:120px;resize:vertical;border:none;background:transparent;
-  border-bottom:2px solid #C4D1DA;padding:4px 2px 10px;
-  font-family:var(--serif);font-size:17.5px;line-height:32px;color:var(--paper-ink);
+  width:100%;min-height:130px;resize:vertical;border:none;
+  background:var(--tan-light);border-radius:13px;padding:13px 15px;
+  font-family:var(--serif);font-size:17.5px;line-height:1.6;color:var(--tan-ink);
+  box-shadow:inset 0 1px 3px rgba(59,47,29,.18);
 }
-.prompt textarea:focus{border-bottom-color:var(--brass)}
-.prompt textarea::placeholder{color:#9AAAB7;font-style:italic}
-
+.prompt textarea:focus{outline:none;box-shadow:inset 0 1px 3px rgba(59,47,29,.18), 0 0 0 2px var(--brass)}
+.prompt textarea::placeholder{color:#A08B5E;font-style:italic}
 .updown{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:28px}
 @media (max-width:600px){.updown{grid-template-columns:1fr}}
-.updown .cell label{font-family:var(--mono);font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;display:block;margin-bottom:6px}
-.cell.up label{color:#3E8871}
-.cell.down label{color:#C24E3E}
+.updown .cell label{font-family:var(--mono);font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;display:block;margin-bottom:7px}
+.cell.up label{color:#2F6B48}
+.cell.down label{color:#9E3E2B}
 .updown input{
-  width:100%;border:none;background:transparent;border-bottom:2px solid #C4D1DA;
-  padding:4px 2px 8px;font-size:16.5px;color:var(--paper-ink);
+  width:100%;border:none;background:var(--tan-light);border-radius:11px;
+  padding:11px 13px;font-size:16.5px;color:var(--tan-ink);
+  box-shadow:inset 0 1px 3px rgba(59,47,29,.18);
 }
-.updown input:focus{border-bottom-color:var(--brass)}
-.suggest{font-size:13px;color:#7C8E9C;margin-top:6px;font-style:italic}
+.updown input:focus{outline:none;box-shadow:inset 0 1px 3px rgba(59,47,29,.18), 0 0 0 2px var(--brass)}
+.updown input::placeholder{color:#A08B5E}
+.suggest{font-size:13px;color:#7A6537;margin-top:6px;font-style:italic}
 .suggest button{
-  background:none;border:none;color:#3E8871;font-size:12px;text-decoration:underline;padding:0 2px;
+  background:none;border:none;color:#2F6B48;font-size:12px;text-decoration:underline;padding:0 2px;
 }
-.cell.down .suggest button{color:#C24E3E}
-
+.cell.down .suggest button{color:#9E3E2B}
 .sheet-foot{display:flex;align-items:center;gap:14px;margin-top:30px;flex-wrap:wrap}
 .btn{
   border:none;border-radius:999px;padding:11px 22px;font-size:13px;letter-spacing:.1em;
@@ -137,11 +137,14 @@ main{max-width:1180px;margin:14px auto 60px;padding:0 22px}
 .btn.brass:hover{background:var(--brass-soft)}
 .btn.ghost{background:transparent;border:1px solid var(--chart-2);color:var(--fog)}
 .btn.ghost:hover{color:var(--text)}
-.sheet .btn.ghost{border-color:#C4D1DA;color:#6C808F}
-.savestate{font-family:var(--mono);font-size:12px;color:#7C8E9C}
+.sheet .btn.brass{background:#8A6F1C;color:#F5EDD8}
+.sheet .btn.brass:hover{background:#A3851F}
+.sheet .btn.ghost{border-color:#A98A55;color:#6E5A30}
+.savestate{font-family:var(--mono);font-size:12px;color:#7A6537}
 
 /* ---------- position report (snapshot) ---------- */
-.report{display:flex;flex-direction:column;gap:16px}
+.report{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start}
+.report .report-head{grid-column:1 / -1}
 .panel{
   background:var(--chart);border:1px solid var(--chart-2);border-radius:var(--radius);
   padding:18px 20px;
@@ -258,7 +261,7 @@ details.adv summary{font-family:var(--mono);font-size:12px;letter-spacing:.1em;t
 
 .toast{
   position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(80px);
-  background:var(--paper);color:var(--paper-ink);font-family:var(--mono);font-size:13px;
+  background:var(--paper);color:#22333F;font-family:var(--mono);font-size:13px;
   padding:11px 20px;border-radius:999px;box-shadow:0 10px 30px rgba(0,0,0,.5);
   transition:transform .25s ease;z-index:60;
 }
@@ -297,6 +300,9 @@ details.adv summary{font-family:var(--mono);font-size:12px;letter-spacing:.1em;t
   <!-- THIS WEEK -->
   <section class="view on" id="view-week">
     <div class="week-grid">
+      <div class="report" id="report">
+        <!-- rendered by JS -->
+      </div>
       <div class="sheet">
         <h2>Log Entry</h2>
         <div class="weekline" id="weekLabel">—</div>
@@ -333,9 +339,6 @@ details.adv summary{font-family:var(--mono);font-size:12px;letter-spacing:.1em;t
         </div>
       </div>
 
-      <div class="report" id="report">
-        <!-- rendered by JS -->
-      </div>
     </div>
   </section>
 
@@ -635,6 +638,7 @@ $('saveBtn').onclick = ()=>saveEntry(true);
 
 /* ---------- First Light adapter ---------- */
 const DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+const MONTH_RE = /^\d{4}-\d{2}$/;
 function unwrapRoot(raw){
   let o = raw, depth = 0;
   while(o && typeof o === 'object' && depth < 4){
@@ -749,13 +753,31 @@ function adaptFLNative(root){
       if(n != null) stages[String(k)] = n;
     }
   }
-  const byDate = {};
+  const byDate = {};   /* date -> Set(goalId): "did something that day" */
+  const byMonth = {};  /* goalId -> Set("YYYY-MM"): month-level checkmarks */
+  const occur = {};    /* goalId -> {date: count}: tally occurrences */
+  const markDay = (id, d) => (byDate[d] = byDate[d] || new Set()).add(String(id));
   const consider = (id, date, val, kind) => {
     const d = String(date).slice(0,10);
+    if(MONTH_RE.test(d)){ /* month-granularity completion (monthly checkboxes) */
+      if(val) (byMonth[id] = byMonth[id] || new Set()).add(d);
+      return;
+    }
     if(!DATE_RE.test(d)) return;
+    if(kind === 'tally'){
+      let n = typeof val === 'number' ? val
+        : (val && typeof val === 'object') ? (val.value ?? val.count ?? val.amount ?? 1)
+        : (val === true ? 1 : parseFloat(val));
+      if(typeof n !== 'number' || isNaN(n)) n = val ? 1 : 0;
+      if(n > 0){
+        (occur[id] = occur[id] || {})[d] = (occur[id][d] || 0) + n;
+        markDay(id, d);
+      }
+      return;
+    }
     let done;
     if(kind === 'check'){ done = !!val && val !== 0 && val !== '0'; }
-    else {
+    else { /* amount: per-day threshold against target */
       let num = typeof val === 'number' ? val
         : (val && typeof val === 'object') ? (val.value ?? val.count ?? val.amount)
         : (val === true ? 1 : parseFloat(val));
@@ -764,14 +786,14 @@ function adaptFLNative(root){
         done = t ? num >= t : num > 0;
       } else done = !!val;
     }
-    if(done)(byDate[d] = byDate[d] || new Set()).add(String(id));
+    if(done) markDay(id, d);
   };
   eachLog(root.checkLogs,  (i,d,v)=>consider(i,d,v,'check'));
   eachLog(root.tallyLogs,  (i,d,v)=>consider(i,d,v,'tally'));
   eachLog(root.amountLogs, (i,d,v)=>consider(i,d,v,'amount'));
   eachLog(root.listItems,  (i,d,v)=>consider(i,d,v,'check'));
-  const out = {habits, byDate, listCounts, targets, stages};
-  if(Object.keys(byDate).length === 0 && Object.keys(listCounts).length === 0) out.empty = true;
+  const out = {habits, byDate, byMonth, occur, listCounts, targets, stages};
+  if(Object.keys(byDate).length === 0 && Object.keys(byMonth).length === 0 && Object.keys(listCounts).length === 0) out.empty = true;
   return out;
 }
 /* Generic fallback for other shapes */
@@ -849,25 +871,45 @@ function computeStats(fl){
   const baseDays = daysBetween(baseStart, baseEnd);
   const done = (id, day) => fl.byDate[day]?.has(id) ? 1 : 0;
   const countIn = (id, days) => days.reduce((a,d)=>a+done(id,d),0);
+  const occIn = (id, days) => days.reduce((a,d)=>a+((fl.occur?.[id]||{})[d]||0),0);
+  const monthDone = (id, ym) => !!(fl.byMonth?.[id]?.has(ym));
 
   const active  = fl.habits.filter(h => !h.longArc);
   const longArc = fl.habits.filter(h => h.longArc);
   const t30This = daysBetween(addDays(week.end, -29), week.end);
   const t30Base = daysBetween(addDays(baseEnd, -29), baseEnd);
+  const ymThis = localISO(week.end).slice(0,7);
+  const ymBase = localISO(baseEnd).slice(0,7);
   const freq = h => h.freq || 'daily';
+  const isTally = h => (h.type||'').includes('tally');
 
-  /* per-habit rate in [0,1], scored on the goal's own cadence */
-  const thisRate = h =>
-    freq(h) === 'weekly'  ? (countIn(h.id, thisDays) > 0 ? 1 : 0) :
-    freq(h) === 'monthly' ? (countIn(h.id, t30This) > 0 ? 1 : 0) :
-    countIn(h.id, thisDays) / 7;
+  /* per-habit rate in [0,1], scored on the goal's own terms */
+  const thisRate = h => {
+    if(isTally(h)){ /* cumulative occurrences vs weekly target */
+      const t = fl.targets?.[h.id], n = occIn(h.id, thisDays);
+      return t ? Math.min(n/t, 1) : (n > 0 ? 1 : 0);
+    }
+    if(freq(h) === 'weekly')  return countIn(h.id, thisDays) > 0 ? 1 : 0;
+    if(freq(h) === 'monthly') return (monthDone(h.id, ymThis) || countIn(h.id, t30This) > 0) ? 1 : 0;
+    return countIn(h.id, thisDays) / 7;
+  };
   const baseRate = h => {
+    if(isTally(h)){
+      const t = fl.targets?.[h.id];
+      let s = 0;
+      for(let k=1;k<=4;k++){
+        const st = addDays(week.start, -7*k);
+        const n = occIn(h.id, daysBetween(st, addDays(st,6)));
+        s += t ? Math.min(n/t, 1) : (n > 0 ? 1 : 0);
+      }
+      return s/4;
+    }
     if(freq(h) === 'weekly'){
       let s = 0;
       for(let k=1;k<=4;k++){ const st = addDays(week.start, -7*k); s += countIn(h.id, daysBetween(st, addDays(st,6))) > 0 ? 1 : 0; }
       return s/4;
     }
-    if(freq(h) === 'monthly') return countIn(h.id, t30Base) > 0 ? 1 : 0;
+    if(freq(h) === 'monthly') return (monthDone(h.id, ymBase) || countIn(h.id, t30Base) > 0) ? 1 : 0;
     return countIn(h.id, baseDays) / 28;
   };
 
@@ -883,8 +925,17 @@ function computeStats(fl){
 
   const solid = [], fragile = [];
   active.forEach(h => {
-    const hit = countIn(h.id, thisDays);
     const f = freq(h);
+    if(isTally(h)){
+      const t = fl.targets?.[h.id], n = occIn(h.id, thisDays);
+      if(t){
+        if(n >= t) solid.push({name:h.name, label:`${n} / ${t} this week`});
+        else fragile.push({name:h.name, label:`${n} / ${t} this week`, sev: 2 + (t-n)/t});
+      } else if(n > 0) solid.push({name:h.name, label:`\u00d7${n} this week`});
+      else fragile.push({name:h.name, label:'none this week', sev:2});
+      return;
+    }
+    const hit = countIn(h.id, thisDays);
     if(f === 'daily'){
       if(hit === 7) solid.push({name:h.name, label:'7 / 7'});
       else if(7-hit >= 2) fragile.push({name:h.name, label:`missed ${7-hit}`, sev:7-hit});
@@ -893,7 +944,8 @@ function computeStats(fl){
       else fragile.push({name:h.name, label:'missed this week', sev:2.5});
     } else { /* monthly */
       if(hit >= 1) solid.push({name:h.name, label:'\u2713 this week'});
-      else if(countIn(h.id, t30This) === 0) fragile.push({name:h.name, label:'not in 30 days', sev:1.5});
+      else if(monthDone(h.id, ymThis)) solid.push({name:h.name, label:'\u2713 this month'});
+      else if(countIn(h.id, t30This) === 0) fragile.push({name:h.name, label:'not this month', sev:1.5});
     }
   });
   fragile.sort((a,b)=>b.sev-a.sev);
@@ -901,8 +953,8 @@ function computeStats(fl){
   const catHits = order.map(c => ({cat:c, hits: cats[c].reduce((a,h)=>a+countIn(h.id,thisDays),0)}));
   const totalHits = catHits.reduce((a,c)=>a+c.hits,0);
 
-  /* day-of-week rhythm: daily-cadence goals only */
-  const dailyIds = active.filter(h => freq(h) === 'daily').map(h => h.id);
+  /* day-of-week rhythm: daily-cadence, non-tally goals only */
+  const dailyIds = active.filter(h => freq(h) === 'daily' && !isTally(h)).map(h => h.id);
   const rhythmStart = addDays(week.start, -49);
   const dowSum = {}, dowCt = {};
   daysBetween(rhythmStart, week.end).forEach(d => {
