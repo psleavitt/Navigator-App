@@ -504,6 +504,7 @@ async function pullCloud(){
   for(const row of rows||[]){
     if(row.id === '__vault__'){
       if(!vault){ vault = row.data; store(LS.vault, vault); }
+      else if(row.data && row.data.salt && row.data.salt !== vault.salt){ vaultConflict = true; }
       continue;
     }
     const cur = entries[row.id];
@@ -520,8 +521,20 @@ async function pushRow(row){
   });
   return true;
 }
-async function pushVault(){
-  if(!vault) return;
+let vaultConflict = false;
+async function fetchRemoteVault(){
+  if(!sbReady()) return null;
+  try{
+    const rows = await sb(`${settings.navTable}?sync_code=eq.${encodeURIComponent(settings.code)}&id=eq.__vault__&select=*`);
+    return (rows && rows.length) ? rows[0].data : null;
+  }catch(e){ return null; }
+}
+async function pushVault(force){
+  if(!vault || !sbReady()) return;
+  if(!force){
+    const remote = await fetchRemoteVault();
+    if(remote && remote.salt && remote.salt !== vault.salt){ vaultConflict = true; return; }
+  }
   try{ await pushRow({id:'__vault__', week_of:null, data:vault, updated_at:new Date().toISOString()}); }catch(e){}
 }
 async function pushAllEntries(){
@@ -531,16 +544,33 @@ async function pushAllEntries(){
 }
 
 /* ---------- lock / vault ---------- */
+function showLockChoice(){
+  $('lockForm').innerHTML = `
+    <button class="btn brass" id="lockNew" style="width:100%;margin-bottom:12px">Start a new log</button>
+    <button class="btn ghost" id="lockRestore" style="width:100%">Restore existing log</button>`;
+  $('lockErr').textContent = '';
+  $('lockNote').textContent = 'If you\u2019ve used Navigator before \u2014 on this device or another \u2014 choose Restore to unlock your existing logbook with your passphrase. Reinstalling the app clears local data, but your encrypted entries stay safe in the cloud.';
+  $('lockNew').onclick = showLockCreate;
+  $('lockRestore').onclick = showLockRestore;
+}
 function showLockCreate(){
   $('lockForm').innerHTML = `
     <input type="password" id="lp1" placeholder="Create a passphrase" autocomplete="new-password">
     <input type="password" id="lp2" placeholder="Confirm passphrase" autocomplete="new-password">
-    <button class="btn brass" id="lockGo">Begin the log</button>`;
-  $('lockNote').textContent = 'Your passphrase encrypts every entry on this device before anything syncs. It is never stored or sent anywhere — and it cannot be recovered if forgotten.';
+    <button class="btn brass" id="lockGo" style="width:100%">Begin the log</button>
+    <button class="btn ghost" id="lockBack" style="width:100%;margin-top:10px">Back</button>`;
+  $('lockErr').textContent = '';
+  $('lockNote').textContent = 'Your passphrase encrypts every entry on this device before anything syncs. It is never stored or sent anywhere \u2014 and it cannot be recovered if forgotten.';
+  $('lockBack').onclick = showLockChoice;
   $('lockGo').onclick = async ()=>{
     const a=$('lp1').value, b=$('lp2').value;
     if(a.length < 6) return lockErr('Use at least 6 characters.');
     if(a !== b) return lockErr('Passphrases don\u2019t match.');
+    /* never create over an existing cloud log */
+    if(sbReady()){
+      const remote = await fetchRemoteVault();
+      if(remote){ lockErr('A log already exists for this sync code \u2014 use Restore instead.'); return; }
+    }
     const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
     cryptoKey = await deriveKey(a, salt);
     const check = await encryptJSON({v:'navigator-ok'});
@@ -550,10 +580,44 @@ function showLockCreate(){
     unlockDone();
   };
 }
+function showLockRestore(){
+  $('lockForm').innerHTML = `
+    <input id="lrUrl" placeholder="Supabase URL" autocomplete="off" value="${settings.url||''}">
+    <input id="lrKey" placeholder="Supabase anon key" autocomplete="off" value="${settings.key||''}">
+    <input id="lrCode" placeholder="Sync code" autocomplete="off" value="${settings.code||''}">
+    <input type="password" id="lrPass" placeholder="Passphrase" autocomplete="current-password">
+    <button class="btn brass" id="lockGo" style="width:100%">Restore & unlock</button>
+    <button class="btn ghost" id="lockBack" style="width:100%;margin-top:10px">Back</button>`;
+  $('lockErr').textContent = '';
+  $('lockNote').textContent = 'Enter the same Supabase details and sync code your apps share, plus your Navigator passphrase. Your logbook will be pulled from the cloud and unlocked.';
+  $('lockBack').onclick = showLockChoice;
+  $('lockGo').onclick = async ()=>{
+    settings.url = $('lrUrl').value.trim();
+    settings.key = $('lrKey').value.trim();
+    settings.code = $('lrCode').value.trim();
+    if(!sbReady()) return lockErr('All three Supabase fields are needed to restore.');
+    store(LS.settings, settings);
+    lockErr(''); $('lockGo').textContent = 'RESTORING\u2026';
+    try{
+      const remote = await fetchRemoteVault();
+      if(!remote || !remote.salt){ $('lockGo').textContent = 'RESTORE & UNLOCK'; return lockErr('No existing log found for that sync code.'); }
+      const key = await deriveKey($('lrPass').value, remote.salt);
+      const chk = await decryptJSON(remote.check, key);
+      if(chk.v !== 'navigator-ok') throw 0;
+      vault = remote; cryptoKey = key;
+      store(LS.vault, vault);
+      await pullCloud();
+      unlockDone();
+    }catch(e){
+      $('lockGo').textContent = 'RESTORE & UNLOCK';
+      lockErr(e.message && e.message.startsWith('Supabase') ? e.message : 'That passphrase doesn\u2019t open this log.');
+    }
+  };
+}
 function showLockEnter(){
   $('lockForm').innerHTML = `
     <input type="password" id="lp1" placeholder="Passphrase" autocomplete="current-password">
-    <button class="btn brass" id="lockGo">Unlock</button>`;
+    <button class="btn brass" id="lockGo" style="width:100%">Unlock</button>`;
   $('lockNote').textContent = '';
   const go = async ()=>{
     try{
@@ -585,7 +649,6 @@ async function decryptAll(){
     catch(e){ /* entry from another vault or corrupt — skip */ }
   }
 }
-
 /* ---------- journal entry ---------- */
 const week = lastCompletedWeek();
 const weekId = localISO(week.start);
@@ -620,8 +683,13 @@ async function saveEntry(toCloud){
   store(LS.entries, entries);
   $('saveState').textContent = 'Saved on this device';
   if(toCloud && sbReady()){
-    try{ await pushRow(entries[weekId]); $('saveState').textContent = 'Saved & synced'; toast('Entry logged'); }
-    catch(e){ $('saveState').textContent = 'Saved locally — sync failed'; }
+    if(vaultConflict){
+      $('saveState').textContent = 'Saved locally only — cloud log uses a different passphrase';
+      toast('Cloud vault mismatch — restore from the lock screen');
+    } else {
+      try{ await pushRow(entries[weekId]); $('saveState').textContent = 'Saved & synced'; toast('Entry logged'); }
+      catch(e){ $('saveState').textContent = 'Saved locally — sync failed'; }
+    }
   } else if(toCloud){
     toast('Saved locally — add sync in Settings');
   }
@@ -1233,14 +1301,31 @@ $('saveSettings').onclick = async ()=>{
   settings.flDataCol = $('flDataCol').value.trim() || 'data';
   store(LS.settings, settings);
   const st = $('syncStatus'); st.className='status ok'; st.textContent='Settings saved.';
-  if(sbReady()){ pushVault(); refreshSnapshot(); }
+  if(sbReady()){
+    const remote = await fetchRemoteVault();
+    if(remote && vault && remote.salt !== vault.salt){
+      vaultConflict = true;
+      st.className='status err';
+      st.textContent='Settings saved, but this sync code already has a log encrypted with a different vault. Nothing was overwritten — reload and choose “Restore existing log” to unlock it.';
+    } else {
+      await pushVault();
+      refreshSnapshot();
+    }
+  }
 };
 $('syncNow').onclick = async ()=>{
   const st = $('syncStatus');
   if(!sbReady()){ st.className='status err'; st.textContent='Add URL, key, and sync code first.'; return; }
   st.className='status info'; st.textContent='Syncing…';
   try{
-    await pullCloud(); await pushAllEntries(); await pushVault();
+    await pullCloud();
+    if(vaultConflict){
+      await decryptAll(); loadCurrentEntry(); renderLogbook();
+      st.className='status err';
+      st.textContent='The cloud log was created with a different passphrase vault. Nothing was overwritten. To unlock it, reload the app and choose “Restore existing log.”';
+      return;
+    }
+    await pushAllEntries(); await pushVault();
     await decryptAll(); loadCurrentEntry(); renderLogbook(); setExportDefaults();
     st.className='status ok'; st.textContent='Synced. All entries current on this device and in the cloud.';
   }catch(e){ st.className='status err'; st.textContent = e.message; }
@@ -1290,7 +1375,7 @@ $('changePP').onclick = async ()=>{
     entries[id] = {id, week_of:id, data: await encryptJSON(plain[id]), updated_at:new Date().toISOString()};
   }
   store(LS.entries, entries);
-  try{ await pushAllEntries(); await pushVault(); }catch(e){}
+  try{ await pushAllEntries(); await pushVault(true); }catch(e){}
   $('ppOld').value = $('ppNew').value = $('ppNew2').value = '';
   st.className='status ok'; st.textContent='Passphrase changed. Every entry re-encrypted and synced.';
 };
@@ -1328,7 +1413,7 @@ document.head.appendChild(mlink);
   if(sbReady()){
     try{ await pullCloud(); }catch(e){ /* offline is fine — local cache carries us */ }
   }
-  if(vault) showLockEnter(); else showLockCreate();
+  if(vault) showLockEnter(); else showLockChoice();
 })();
 </script>
 </body>
