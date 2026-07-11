@@ -713,10 +713,19 @@ function adaptFLNative(root){
   const catMap = resolveCategories(root.categories);
   const goals = root.goals.filter(g => g && typeof g === 'object' && !(g.archived || g.deleted || g.isArchived || g.active === false));
   if(!goals.length) return null;
+  const typeOf = g => String(g.type ?? g.kind ?? g.trackingType ?? g.goalType ?? '').toLowerCase();
+  const freqOf = g => {
+    const f = String(g.frequency ?? g.freq ?? g.cadence ?? g.repeat ?? g.schedule ?? g.period ?? g.interval ?? 'daily').toLowerCase();
+    if(f.includes('week')) return 'weekly';
+    if(f.includes('month')) return 'monthly';
+    return 'daily';
+  };
   const habits = goals.map(g => {
     const rawCat = g.category ?? g.categoryId ?? g.category_id ?? g.cat ?? g.group ?? g.categoryKey;
     const catName = rawCat != null ? (catMap[String(rawCat)] || String(rawCat)) : 'Other';
-    return {id: habitId(g), name: habitName(g), category: normCat(catName), _raw: g};
+    const t = typeOf(g);
+    return {id: habitId(g), name: habitName(g), category: normCat(catName),
+            type: t, freq: freqOf(g), longArc: t.includes('stage') || t.includes('list'), _raw: g};
   });
   const targets = {};
   goals.forEach(g => {
@@ -724,6 +733,22 @@ function adaptFLNative(root){
     const n = typeof t === 'number' ? t : parseFloat(t);
     if(!isNaN(n) && n > 0) targets[habitId(g)] = n;
   });
+  /* list goal progress: count items per goal (dated or not) */
+  const listCounts = {};
+  const bump = id => { if(id != null) listCounts[String(id)] = (listCounts[String(id)]||0) + 1; };
+  const li = root.listItems;
+  if(Array.isArray(li)) li.forEach(r => { if(r && typeof r === 'object') bump(r.goalId ?? r.goal_id ?? r.goal ?? r.habitId ?? r.gid); });
+  else if(li && typeof li === 'object') for(const k in li){ const v = li[k]; if(Array.isArray(v)) listCounts[String(k)] = v.length; }
+  /* stage goal progress */
+  const stages = {};
+  const ss = root.stageState;
+  if(ss && typeof ss === 'object'){
+    for(const k in ss){
+      const v = ss[k];
+      const n = typeof v === 'number' ? v : (v && typeof v === 'object' ? (v.current ?? v.stage ?? v.index ?? v.value) : null);
+      if(n != null) stages[String(k)] = n;
+    }
+  }
   const byDate = {};
   const consider = (id, date, val, kind) => {
     const d = String(date).slice(0,10);
@@ -745,14 +770,15 @@ function adaptFLNative(root){
   eachLog(root.tallyLogs,  (i,d,v)=>consider(i,d,v,'tally'));
   eachLog(root.amountLogs, (i,d,v)=>consider(i,d,v,'amount'));
   eachLog(root.listItems,  (i,d,v)=>consider(i,d,v,'check'));
-  if(Object.keys(byDate).length === 0) return {habits, byDate, empty:true};
-  return {habits, byDate};
+  const out = {habits, byDate, listCounts, targets, stages};
+  if(Object.keys(byDate).length === 0 && Object.keys(listCounts).length === 0) out.empty = true;
+  return out;
 }
 /* Generic fallback for other shapes */
 function adaptGeneric(root){
   const habitsRaw = findHabits(root);
   if(!habitsRaw) return null;
-  const habits = habitsRaw.map(h => ({id:habitId(h), name:habitName(h), category:habitCat(h), _raw:h}));
+  const habits = habitsRaw.map(h => ({id:habitId(h), name:habitName(h), category:habitCat(h), type:'', freq:'daily', longArc:false, _raw:h}));
   const byDate = {};
   const mark = (date, id) => {
     const d = String(date).slice(0,10);
@@ -822,47 +848,89 @@ function computeStats(fl){
   const baseStart = addDays(week.start, -28), baseEnd = addDays(week.start, -1);
   const baseDays = daysBetween(baseStart, baseEnd);
   const done = (id, day) => fl.byDate[day]?.has(id) ? 1 : 0;
-  const rate = (ids, days) => {
-    let hit=0, tot=ids.length*days.length;
-    ids.forEach(id => days.forEach(d => hit += done(id,d)));
-    return tot ? hit/tot : 0;
+  const countIn = (id, days) => days.reduce((a,d)=>a+done(id,d),0);
+
+  const active  = fl.habits.filter(h => !h.longArc);
+  const longArc = fl.habits.filter(h => h.longArc);
+  const t30This = daysBetween(addDays(week.end, -29), week.end);
+  const t30Base = daysBetween(addDays(baseEnd, -29), baseEnd);
+  const freq = h => h.freq || 'daily';
+
+  /* per-habit rate in [0,1], scored on the goal's own cadence */
+  const thisRate = h =>
+    freq(h) === 'weekly'  ? (countIn(h.id, thisDays) > 0 ? 1 : 0) :
+    freq(h) === 'monthly' ? (countIn(h.id, t30This) > 0 ? 1 : 0) :
+    countIn(h.id, thisDays) / 7;
+  const baseRate = h => {
+    if(freq(h) === 'weekly'){
+      let s = 0;
+      for(let k=1;k<=4;k++){ const st = addDays(week.start, -7*k); s += countIn(h.id, daysBetween(st, addDays(st,6))) > 0 ? 1 : 0; }
+      return s/4;
+    }
+    if(freq(h) === 'monthly') return countIn(h.id, t30Base) > 0 ? 1 : 0;
+    return countIn(h.id, baseDays) / 28;
   };
 
   const cats = {};
-  fl.habits.forEach(h => (cats[h.category] = cats[h.category]||[]).push(h.id));
+  active.forEach(h => (cats[h.category] = cats[h.category]||[]).push(h));
   const order = ['Light','Learn','Live','Love'].filter(c=>cats[c]).concat(Object.keys(cats).filter(c=>!['Light','Learn','Live','Love'].includes(c)));
-
   const perCat = order.map(c => {
-    const r = rate(cats[c], thisDays), b = rate(cats[c], baseDays);
+    const hs = cats[c];
+    const r = hs.reduce((a,h)=>a+thisRate(h),0)/hs.length;
+    const b = hs.reduce((a,h)=>a+baseRate(h),0)/hs.length;
     return {cat:c, rate:r, base:b, delta:r-b};
   });
 
-  const habits = fl.habits.map(h => {
-    const hit = thisDays.reduce((a,d)=>a+done(h.id,d),0);
-    return {name:h.name, cat:h.category, hit, missed:7-hit};
+  const solid = [], fragile = [];
+  active.forEach(h => {
+    const hit = countIn(h.id, thisDays);
+    const f = freq(h);
+    if(f === 'daily'){
+      if(hit === 7) solid.push({name:h.name, label:'7 / 7'});
+      else if(7-hit >= 2) fragile.push({name:h.name, label:`missed ${7-hit}`, sev:7-hit});
+    } else if(f === 'weekly'){
+      if(hit >= 1) solid.push({name:h.name, label:'\u2713 this week'});
+      else fragile.push({name:h.name, label:'missed this week', sev:2.5});
+    } else { /* monthly */
+      if(hit >= 1) solid.push({name:h.name, label:'\u2713 this week'});
+      else if(countIn(h.id, t30This) === 0) fragile.push({name:h.name, label:'not in 30 days', sev:1.5});
+    }
   });
-  const solid = habits.filter(h=>h.hit===7);
-  const fragile = habits.filter(h=>h.missed>=2).sort((a,b)=>b.missed-a.missed);
+  fragile.sort((a,b)=>b.sev-a.sev);
 
-  const catHits = order.map(c => ({cat:c, hits: cats[c].reduce((a,id)=>a+thisDays.reduce((x,d)=>x+done(id,d),0),0)}));
+  const catHits = order.map(c => ({cat:c, hits: cats[c].reduce((a,h)=>a+countIn(h.id,thisDays),0)}));
   const totalHits = catHits.reduce((a,c)=>a+c.hits,0);
 
-  // day-of-week rhythm over trailing 8 weeks (incl. this window), Fri..Thu order
-  const allIds = fl.habits.map(h=>h.id);
+  /* day-of-week rhythm: daily-cadence goals only */
+  const dailyIds = active.filter(h => freq(h) === 'daily').map(h => h.id);
   const rhythmStart = addDays(week.start, -49);
   const dowSum = {}, dowCt = {};
   daysBetween(rhythmStart, week.end).forEach(d => {
     const wd = new Date(d+'T12:00:00').getDay();
-    dowSum[wd] = (dowSum[wd]||0) + allIds.reduce((a,id)=>a+done(id,d),0);
-    dowCt[wd]  = (dowCt[wd]||0) + allIds.length;
+    dowSum[wd] = (dowSum[wd]||0) + dailyIds.reduce((a,id)=>a+done(id,d),0);
+    dowCt[wd]  = (dowCt[wd]||0) + dailyIds.length;
   });
-  const dowOrder = [5,6,0,1,2,3,4]; // Fri..Thu
+  const dowOrder = [5,6,0,1,2,3,4];
   const dowNames = {0:'Su',1:'Mo',2:'Tu',3:'We',4:'Th',5:'Fr',6:'Sa'};
   const rhythm = dowOrder.map(wd => ({d:dowNames[wd], rate: dowCt[wd] ? dowSum[wd]/dowCt[wd] : 0}));
 
-  return {perCat, solid, fragile, catHits, totalHits, rhythm};
-}
+  /* long-arc goals: stage & list, reported but never weekly-scored */
+  const longList = longArc.map(h => {
+    let status = 'tracked separately';
+    if(h.type.includes('list')){
+      const n = fl.listCounts ? fl.listCounts[h.id] : null;
+      const tg = fl.targets ? fl.targets[h.id] : null;
+      if(n != null) status = tg ? `${n} / ${tg} items` : `${n} items`;
+      else if(tg) status = `target ${tg}`;
+    } else if(h.type.includes('stage')){
+      const s = fl.stages ? fl.stages[h.id] : null;
+      if(s != null) status = `stage ${s}`;
+    }
+    return {name:h.name, status};
+  });
 
+  return {perCat, solid, fragile, catHits, totalHits, rhythm, longArc:longList, dailyCount:dailyIds.length};
+}
 /* ---------- snapshot fetch + render ---------- */
 async function refreshSnapshot(){
   const rep = $('report');
@@ -913,11 +981,16 @@ function renderReport(s){
   }).join('');
 
   const solid = s.solid.length
-    ? s.solid.map(h=>`<div class="hab solid"><span class="nm">${h.name}</span><span class="ct">7 / 7</span></div>`).join('')
+    ? s.solid.map(h=>`<div class="hab solid"><span class="nm">${h.name}</span><span class="ct">${h.label}</span></div>`).join('')
     : `<div class="none">No perfect weeks this time — the tide turns.</div>`;
   const fragile = s.fragile.length
-    ? s.fragile.map(h=>`<div class="hab fragile"><span class="nm">${h.name}</span><span class="ct">missed ${h.missed}</span></div>`).join('')
+    ? s.fragile.map(h=>`<div class="hab fragile"><span class="nm">${h.name}</span><span class="ct">${h.label}</span></div>`).join('')
     : `<div class="none">Nothing adrift — steady as she goes.</div>`;
+  const longArc = s.longArc.length
+    ? `<div class="panel"><h3>Long arc <span>· stage & list goals</span></h3><div class="hablist">${
+        s.longArc.map(h=>`<div class="hab"><span class="nm">${h.name}</span><span class="ct" style="color:var(--fog)">${h.status}</span></div>`).join('')
+      }</div><div class="footnote">These build over months, not weeks — they're kept out of the weekly scores.</div></div>`
+    : '';
 
   const balance = s.totalHits
     ? `<div class="balance">${s.catHits.map(c=>`<i style="width:${(c.hits/s.totalHits*100)}%;background:${color(c.cat)}"></i>`).join('')}</div>
@@ -941,10 +1014,11 @@ function renderReport(s){
       <div class="subhead fragile">Needs attention</div><div class="hablist">${fragile}</div>
     </div>
     <div class="panel"><h3>Category balance</h3>${balance}</div>
-    <div class="panel"><h3>Weekly rhythm <span>· trailing 8 wks</span></h3>
+    ${longArc}
+    ${s.dailyCount ? `<div class="panel"><h3>Weekly rhythm <span>· trailing 8 wks</span></h3>
       <div class="dowchart">${rhythm}</div>
-      <div class="footnote">Average completion rate by day of week. The soft day is marked in signal red.</div>
-    </div>`;
+      <div class="footnote">Average completion rate of daily goals by day of week. The soft day is marked in signal red.</div>
+    </div>` : ''}`;
 }
 function renderSuggestions(s){
   if(s.solid.length && !$('oneUp').value){
@@ -1135,7 +1209,9 @@ $('testFL').onclick = async ()=>{
     const fl = adaptFirstLight(raw);
     if(fl && !fl.empty){
       st.className='status ok';
-      st.textContent = `Connected — found ${fl.habits.length} habits and ${Object.keys(fl.byDate).length} days of history.`;
+      const fq = {daily:0, weekly:0, monthly:0, long:0};
+      fl.habits.forEach(h => { if(h.longArc) fq.long++; else fq[h.freq||'daily']++; });
+      st.textContent = `Connected — ${fl.habits.length} goals (${fq.daily} daily, ${fq.weekly} weekly, ${fq.monthly} monthly, ${fq.long} stage/list) and ${Object.keys(fl.byDate).length} days of history.`;
       refreshSnapshot();
     } else {
       const keys = raw && typeof raw==='object' ? Object.keys(raw).join(', ') : typeof raw;
