@@ -464,7 +464,7 @@ function weekLabel(w){ return `${fmt(w.start)} – ${fmt(w.end, true)}`; }
 
 /* ---------- crypto ---------- */
 const enc = new TextEncoder(), dec = new TextDecoder();
-function b64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function b64(buf){ const u = new Uint8Array(buf); let s=''; for(let i=0;i<u.length;i+=0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i+0x8000)); return btoa(s); }
 function unb64(s){ return Uint8Array.from(atob(s), c=>c.charCodeAt(0)); }
 
 async function deriveKey(pass, saltB64){
@@ -674,7 +674,7 @@ function loadCurrentEntry(){
     $('saveState').textContent = 'Saved';
   }
 }
-async function saveEntry(toCloud){
+async function saveEntry(toCloud, quiet){
   const body = currentBody();
   if(!Object.values(body).some(v=>v.trim())) return;
   plain[weekId] = body;
@@ -685,12 +685,12 @@ async function saveEntry(toCloud){
   if(toCloud && sbReady()){
     if(vaultConflict){
       $('saveState').textContent = 'Saved locally only — cloud log uses a different passphrase';
-      toast('Cloud vault mismatch — restore from the lock screen');
+      if(!quiet) toast('Cloud vault mismatch — restore from the lock screen');
     } else {
-      try{ await pushRow(entries[weekId]); $('saveState').textContent = 'Saved & synced'; toast('Entry logged'); }
+      try{ await pushRow(entries[weekId]); $('saveState').textContent = 'Saved & synced'; if(!quiet) toast('Entry logged'); }
       catch(e){ $('saveState').textContent = 'Saved locally — sync failed'; }
     }
-  } else if(toCloud){
+  } else if(toCloud && !quiet){
     toast('Saved locally — add sync in Settings');
   }
   renderLogbook();
@@ -699,7 +699,7 @@ async function saveEntry(toCloud){
   $(id).addEventListener('input', ()=>{
     $('saveState').textContent = 'Writing…';
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(()=>saveEntry(false), 1200);
+    saveTimer = setTimeout(()=>saveEntry(true, true), 1200);
   });
 });
 $('saveBtn').onclick = ()=>saveEntry(true);
@@ -796,7 +796,11 @@ function adaptFLNative(root){
     const rawCat = g.category ?? g.categoryId ?? g.category_id ?? g.cat ?? g.group ?? g.categoryKey;
     const catName = rawCat != null ? (catMap[String(rawCat)] || String(rawCat)) : 'Other';
     const t = typeOf(g);
-    return {id: habitId(g), name: habitName(g), category: normCat(catName),
+    let start = null;
+    for(const k of ['createdAt','created_at','startDate','start','since']){
+      const v = g[k]; if(v){ const d = String(v).slice(0,10); if(DATE_RE.test(d)){ start = d; break; } }
+    }
+    return {id: habitId(g), name: habitName(g), category: normCat(catName), start,
             type: t, freq: freqOf(g), longArc: t.includes('stage') || t.includes('list'), _raw: g};
   });
   const targets = {};
@@ -868,7 +872,7 @@ function adaptFLNative(root){
 function adaptGeneric(root){
   const habitsRaw = findHabits(root);
   if(!habitsRaw) return null;
-  const habits = habitsRaw.map(h => ({id:habitId(h), name:habitName(h), category:habitCat(h), type:'', freq:'daily', longArc:false, _raw:h}));
+  const habits = habitsRaw.map(h => ({id:habitId(h), name:habitName(h), category:habitCat(h), type:'', freq:'daily', longArc:false, start:null, _raw:h}));
   const byDate = {};
   const mark = (date, id) => {
     const d = String(date).slice(0,10);
@@ -935,8 +939,8 @@ function daysBetween(start, end){
 }
 function computeStats(fl){
   const thisDays = daysBetween(week.start, week.end);
-  const baseStart = addDays(week.start, -28), baseEnd = addDays(week.start, -1);
-  const baseDays = daysBetween(baseStart, baseEnd);
+  const baseEnd = addDays(week.start, -1);
+  const baseDaysAll = daysBetween(addDays(week.start, -28), baseEnd);
   const done = (id, day) => fl.byDate[day]?.has(id) ? 1 : 0;
   const countIn = (id, days) => days.reduce((a,d)=>a+done(id,d),0);
   const occIn = (id, days) => days.reduce((a,d)=>a+((fl.occur?.[id]||{})[d]||0),0);
@@ -947,38 +951,46 @@ function computeStats(fl){
   const t30This = daysBetween(addDays(week.end, -29), week.end);
   const t30Base = daysBetween(addDays(baseEnd, -29), baseEnd);
   const ymThis = localISO(week.end).slice(0,7);
-  const ymBase = localISO(baseEnd).slice(0,7);
+  const pm = new Date(week.end); pm.setDate(0);   /* last day of previous month */
+  const ymPrev = localISO(pm).slice(0,7);
   const freq = h => h.freq || 'daily';
   const isTally = h => (h.type||'').includes('tally');
+  /* only score days the goal existed */
+  const clamp = (h, days) => h.start ? days.filter(d => d >= h.start) : days;
 
-  /* per-habit rate in [0,1], scored on the goal's own terms */
-  const thisRate = h => {
-    if(isTally(h)){ /* cumulative occurrences vs weekly target */
-      const t = fl.targets?.[h.id], n = occIn(h.id, thisDays);
+  /* per-habit rate in [0,1]; null = goal didn't exist in that window */
+  const rateIn = (h, days, weeklyBinary) => {
+    const ds = clamp(h, days);
+    if(!ds.length) return null;
+    if(isTally(h)){
+      const t = fl.targets?.[h.id], n = occIn(h.id, ds);
       return t ? Math.min(n/t, 1) : (n > 0 ? 1 : 0);
     }
-    if(freq(h) === 'weekly')  return countIn(h.id, thisDays) > 0 ? 1 : 0;
-    if(freq(h) === 'monthly') return (monthDone(h.id, ymThis) || countIn(h.id, t30This) > 0) ? 1 : 0;
-    return countIn(h.id, thisDays) / 7;
+    if(weeklyBinary) return countIn(h.id, ds) > 0 ? 1 : 0;
+    return countIn(h.id, ds) / ds.length;
+  };
+  const thisRate = h => {
+    if(freq(h) === 'monthly' && !isTally(h)){
+      if(h.start && h.start > localISO(week.end)) return null;
+      return (monthDone(h.id, ymThis) || countIn(h.id, clamp(h, t30This)) > 0) ? 1 : 0;
+    }
+    return rateIn(h, thisDays, freq(h) === 'weekly');
   };
   const baseRate = h => {
-    if(isTally(h)){
-      const t = fl.targets?.[h.id];
-      let s = 0;
+    if(freq(h) === 'monthly' && !isTally(h)){
+      if(h.start && h.start.slice(0,7) > ymPrev) return null;
+      return (monthDone(h.id, ymPrev) || countIn(h.id, clamp(h, t30Base)) > 0) ? 1 : 0;
+    }
+    if(isTally(h) || freq(h) === 'weekly'){
+      let s = 0, n = 0;
       for(let k=1;k<=4;k++){
         const st = addDays(week.start, -7*k);
-        const n = occIn(h.id, daysBetween(st, addDays(st,6)));
-        s += t ? Math.min(n/t, 1) : (n > 0 ? 1 : 0);
+        const r = rateIn(h, daysBetween(st, addDays(st,6)), freq(h) === 'weekly');
+        if(r !== null){ s += r; n++; }
       }
-      return s/4;
+      return n ? s/n : null;
     }
-    if(freq(h) === 'weekly'){
-      let s = 0;
-      for(let k=1;k<=4;k++){ const st = addDays(week.start, -7*k); s += countIn(h.id, daysBetween(st, addDays(st,6))) > 0 ? 1 : 0; }
-      return s/4;
-    }
-    if(freq(h) === 'monthly') return (monthDone(h.id, ymBase) || countIn(h.id, t30Base) > 0) ? 1 : 0;
-    return countIn(h.id, baseDays) / 28;
+    return rateIn(h, baseDaysAll, false);
   };
 
   const cats = {};
@@ -986,16 +998,20 @@ function computeStats(fl){
   const order = ['Light','Learn','Live','Love'].filter(c=>cats[c]).concat(Object.keys(cats).filter(c=>!['Light','Learn','Live','Love'].includes(c)));
   const perCat = order.map(c => {
     const hs = cats[c];
-    const r = hs.reduce((a,h)=>a+thisRate(h),0)/hs.length;
-    const b = hs.reduce((a,h)=>a+baseRate(h),0)/hs.length;
-    return {cat:c, rate:r, base:b, delta:r-b};
+    const rs = hs.map(thisRate).filter(v => v !== null);
+    const bs = hs.map(baseRate).filter(v => v !== null);
+    const r = rs.length ? rs.reduce((a,v)=>a+v,0)/rs.length : 0;
+    const b = bs.length ? bs.reduce((a,v)=>a+v,0)/bs.length : null;
+    return {cat:c, rate:r, base:b, delta: b === null ? null : r - b};
   });
 
   const solid = [], fragile = [];
   active.forEach(h => {
     const f = freq(h);
+    const ds = clamp(h, thisDays);
+    if(!ds.length) return;                    /* goal didn't exist this week */
     if(isTally(h)){
-      const t = fl.targets?.[h.id], n = occIn(h.id, thisDays);
+      const t = fl.targets?.[h.id], n = occIn(h.id, ds);
       if(t){
         if(n >= t) solid.push({name:h.name, label:`${n} / ${t} this week`});
         else fragile.push({name:h.name, label:`${n} / ${t} this week`, sev: 2 + (t-n)/t});
@@ -1003,17 +1019,17 @@ function computeStats(fl){
       else fragile.push({name:h.name, label:'none this week', sev:2});
       return;
     }
-    const hit = countIn(h.id, thisDays);
+    const hit = countIn(h.id, ds);
     if(f === 'daily'){
-      if(hit === 7) solid.push({name:h.name, label:'7 / 7'});
-      else if(7-hit >= 2) fragile.push({name:h.name, label:`missed ${7-hit}`, sev:7-hit});
+      if(hit === ds.length) solid.push({name:h.name, label:`${hit} / ${ds.length}`});
+      else if(ds.length - hit >= 2) fragile.push({name:h.name, label:`missed ${ds.length-hit}`, sev:ds.length-hit});
     } else if(f === 'weekly'){
       if(hit >= 1) solid.push({name:h.name, label:'\u2713 this week'});
       else fragile.push({name:h.name, label:'missed this week', sev:2.5});
     } else { /* monthly */
       if(hit >= 1) solid.push({name:h.name, label:'\u2713 this week'});
       else if(monthDone(h.id, ymThis)) solid.push({name:h.name, label:'\u2713 this month'});
-      else if(countIn(h.id, t30This) === 0) fragile.push({name:h.name, label:'not this month', sev:1.5});
+      else if(countIn(h.id, clamp(h, t30This)) === 0) fragile.push({name:h.name, label:'not this month', sev:1.5});
     }
   });
   fragile.sort((a,b)=>b.sev-a.sev);
@@ -1021,14 +1037,17 @@ function computeStats(fl){
   const catHits = order.map(c => ({cat:c, hits: cats[c].reduce((a,h)=>a+countIn(h.id,thisDays),0)}));
   const totalHits = catHits.reduce((a,c)=>a+c.hits,0);
 
-  /* day-of-week rhythm: daily-cadence, non-tally goals only */
-  const dailyIds = active.filter(h => freq(h) === 'daily' && !isTally(h)).map(h => h.id);
+  /* day-of-week rhythm: daily-cadence, non-tally goals, only days they existed */
+  const dailyHs = active.filter(h => freq(h) === 'daily' && !isTally(h));
   const rhythmStart = addDays(week.start, -49);
   const dowSum = {}, dowCt = {};
   daysBetween(rhythmStart, week.end).forEach(d => {
     const wd = new Date(d+'T12:00:00').getDay();
-    dowSum[wd] = (dowSum[wd]||0) + dailyIds.reduce((a,id)=>a+done(id,d),0);
-    dowCt[wd]  = (dowCt[wd]||0) + dailyIds.length;
+    dailyHs.forEach(h => {
+      if(h.start && h.start > d) return;
+      dowSum[wd] = (dowSum[wd]||0) + done(h.id, d);
+      dowCt[wd]  = (dowCt[wd]||0) + 1;
+    });
   });
   const dowOrder = [5,6,0,1,2,3,4];
   const dowNames = {0:'Su',1:'Mo',2:'Tu',3:'We',4:'Th',5:'Fr',6:'Sa'};
@@ -1049,7 +1068,7 @@ function computeStats(fl){
     return {name:h.name, status};
   });
 
-  return {perCat, solid, fragile, catHits, totalHits, rhythm, longArc:longList, dailyCount:dailyIds.length};
+  return {perCat, solid, fragile, catHits, totalHits, rhythm, longArc:longList, dailyCount:dailyHs.length};
 }
 /* ---------- snapshot fetch + render ---------- */
 async function refreshSnapshot(){
@@ -1072,7 +1091,7 @@ async function refreshSnapshot(){
     renderReport(flStats);
     renderSuggestions(flStats);
   }catch(e){
-    rep.innerHTML = panelHead() + `<div class="panel"><div class="setup-hint">${e.message}<br><br>Verify the First Light table settings in <a href="#" onclick="showView('settings');return false;">Settings</a>.</div></div>`;
+    rep.innerHTML = panelHead() + `<div class="panel"><div class="setup-hint">${escapeHTML(e.message)}<br><br>Verify the First Light table settings in <a href="#" onclick="showView('settings');return false;">Settings</a>.</div></div>`;
   }
 }
 function panelHead(){
@@ -1087,16 +1106,21 @@ function renderReport(s){
   const color = c => catColors[c] || '#8FA3B8';
 
   const vsBase = s.perCat.map(c => {
-    const d = Math.round(c.delta*100);
-    const cls = d>2 ? 'pos' : d<-2 ? 'neg' : 'flat';
-    const arrow = d>2 ? '▲' : d<-2 ? '▼' : '—';
+    let chip;
+    if(c.delta === null){
+      chip = `<div class="delta flat">${pct(c.rate)}% · new</div>`;
+    } else {
+      const d = Math.round(c.delta*100);
+      if(Math.abs(d) <= 2) chip = `<div class="delta flat">${pct(c.rate)}% —</div>`;
+      else chip = `<div class="delta ${d>0?'pos':'neg'}">${pct(c.rate)}% ${d>0?'▲ +':'▼ '}${d}%</div>`;
+    }
     return `<div class="catrow">
       <div class="cname">${c.cat}</div>
       <div class="bars">
         <div class="bar this"><i style="width:${pct(c.rate)}%"></i></div>
-        <div class="bar base"><i style="width:${pct(c.base)}%"></i></div>
+        <div class="bar base"><i style="width:${pct(c.base||0)}%"></i></div>
       </div>
-      <div class="delta ${cls}">${pct(c.rate)}% ${arrow}${d===0?'':' '+(d>0?'+':'')+(d||'')}${d?'%':''}</div>
+      ${chip}
     </div>`;
   }).join('');
 
@@ -1141,14 +1165,16 @@ function renderReport(s){
     </div>` : ''}`;
 }
 function renderSuggestions(s){
-  if(s.solid.length && !$('oneUp').value){
-    const n = s.solid[0].name;
-    $('upSuggest').innerHTML = `Candidate: <button type="button" onclick="fillField('oneUp','${n.replace(/'/g,"\\'")}')">${n}</button>`;
-  }
-  if(s.fragile.length && !$('oneDown').value){
-    const n = s.fragile[0].name;
-    $('downSuggest').innerHTML = `Candidate: <button type="button" onclick="fillField('oneDown','${n.replace(/'/g,"\\'")}')">${n}</button>`;
-  }
+  const put = (fieldId, slotId, h) => {
+    if(!h || $(fieldId).value) return;
+    $(slotId).textContent = 'Candidate: ';
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = h.name;
+    b.onclick = () => fillField(fieldId, h.name);
+    $(slotId).appendChild(b);
+  };
+  put('oneUp', 'upSuggest', s.solid[0]);
+  put('oneDown', 'downSuggest', s.fragile[0]);
 }
 function fillField(id, v){ $(id).value = v; $(id).dispatchEvent(new Event('input')); }
 
@@ -1196,7 +1222,7 @@ async function deleteEntry(id){
   if(!confirm('Delete this entry permanently? This can\u2019t be undone.')) return;
   delete plain[id]; delete entries[id];
   store(LS.entries, entries);
-  if(sbReady()){
+  if(sbReady() && !vaultConflict){
     try{ await sb(`${settings.navTable}?id=eq.${encodeURIComponent(id)}&sync_code=eq.${encodeURIComponent(settings.code)}`, {method:'DELETE'}); }catch(e){}
   }
   renderLogbook();
@@ -1219,6 +1245,7 @@ async function ensureDocx(){
   if(window.docx) return true;
   for(const u of [
     'https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js',
+    'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js',
     'https://unpkg.com/docx@8.5.0/build/index.umd.js'
   ]){ try{ await loadScript(u); if(window.docx) return true; }catch(e){} }
   return false;
@@ -1359,6 +1386,11 @@ $('testFL').onclick = async ()=>{
 };
 $('changePP').onclick = async ()=>{
   const st = $('ppStatus');
+  if(vaultConflict){
+    st.className='status err';
+    st.textContent='The cloud log uses a different vault. Reload and choose “Restore existing log” before changing the passphrase.';
+    return;
+  }
   const oldP = $('ppOld').value, n1 = $('ppNew').value, n2 = $('ppNew2').value;
   if(n1.length < 6){ st.className='status err'; st.textContent='New passphrase needs at least 6 characters.'; return; }
   if(n1 !== n2){ st.className='status err'; st.textContent='New passphrases don\u2019t match.'; return; }
@@ -1405,6 +1437,15 @@ const manifest = {
 const mlink = document.createElement('link'); mlink.rel = 'manifest';
 mlink.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
 document.head.appendChild(mlink);
+
+/* if the app sits open across a Thursday→Friday boundary, roll to the new week on return */
+document.addEventListener('visibilitychange', async ()=>{
+  if(document.visibilityState !== 'visible') return;
+  if(localISO(lastCompletedWeek().start) === weekId) return;
+  clearTimeout(saveTimer);
+  if(cryptoKey){ try{ await saveEntry(true, true); }catch(e){} }
+  location.reload();
+});
 
 /* init */
 (async function init(){
