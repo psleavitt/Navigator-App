@@ -439,7 +439,7 @@ create policy "navigator open" on navigator_entries
     <div class="formcard">
       <h3>GTD connection</h3>
       <div class="sub">Navigator reads open/overdue task counts (read-only) for the Look Back &amp; Migrate planning step.</div>
-      <div class="frow"><label for="gtdTable">GTD table name</label><input id="gtdTable" placeholder="gtd"></div>
+      <div class="frow"><label for="gtdTable">GTD table name</label><input id="gtdTable" placeholder="gtd_data"></div>
       <div class="frow"><label for="gtdCodeCol">Sync code column</label><input id="gtdCodeCol" placeholder="sync_code"></div>
       <div class="frow"><label for="gtdDataCol">Data column (JSON)</label><input id="gtdDataCol" placeholder="data"></div>
       <div class="frow"><label for="gtdCode">GTD sync code</label><input id="gtdCode" placeholder="your personal GTD sync code"></div>
@@ -482,10 +482,10 @@ let settings = load(LS.settings) || {
   url:'', key:'', code:'',
   flTable:'first_light', flCodeCol:'sync_code', flDataCol:'data',
   navTable:'navigator_entries',
-  gtdTable:'gtd', gtdCodeCol:'sync_code', gtdDataCol:'data', gtdCode:''
+  gtdTable:'gtd_data', gtdCodeCol:'sync_code', gtdDataCol:'data', gtdCode:''
 };
 /* backfill new fields for anyone with settings already saved from before GTD support */
-settings.gtdTable   = settings.gtdTable   || 'gtd';
+settings.gtdTable   = settings.gtdTable   || 'gtd_data';
 settings.gtdCodeCol = settings.gtdCodeCol || 'sync_code';
 settings.gtdDataCol = settings.gtdDataCol || 'data';
 settings.gtdCode    = settings.gtdCode    || '';
@@ -1002,7 +1002,7 @@ function findTaskList(o, keyHints){
 function unwrapGTDRoot(raw){
   let o = raw, depth = 0;
   while(o && typeof o === 'object' && depth < 4){
-    if(findTaskList(o, ['household','home','householdTasks','homeTasks']) || findTaskList(o, ['church','churchTasks'])) return o;
+    if(findTaskList(o, ['household','home','householdTasks','homeTasks']) || findTaskList(o, ['church','churchTasks']) || findTaskList(o, ['tasks','items','todos'])) return o;
     const inner = o.data || o.state || o.payload || o.appData || o.app;
     if(inner && typeof inner === 'object'){ o = inner; depth++; } else break;
   }
@@ -1013,6 +1013,37 @@ function taskDue(t){
   return d ? String(d).slice(0,10) : null;
 }
 function taskDone(t){ return !!(t.completed ?? t.done ?? t.isComplete ?? t.checked); }
+function guessListField(t){
+  for(const k of ['list','listId','list_id','listName','list_name','category','listType','list_type','board','group']){
+    if(t[k] != null) return k;
+  }
+  return null;
+}
+function splitTasksByList(tasks){
+  let foundKey = null;
+  for(const t of tasks){
+    if(!t || typeof t !== 'object') continue;
+    const k = guessListField(t);
+    if(k){ foundKey = k; break; }
+  }
+  if(!foundKey) return null;
+  const household = [], church = [];
+  let matched = 0;
+  tasks.forEach(t=>{
+    if(!t || typeof t !== 'object') return;
+    const v = String(t[foundKey]||'').toLowerCase();
+    if(/house|home/.test(v)){ household.push(t); matched++; }
+    else if(/church/.test(v)){ church.push(t); matched++; }
+  });
+  return matched ? {household, church} : null;
+}
+function gtdShapeReport(raw){
+  const root = unwrapGTDRoot(raw) || raw;
+  if(!root || typeof root !== 'object') return '';
+  const flat = findTaskList(root, ['tasks','items','todos']);
+  if(flat && flat[0] && typeof flat[0] === 'object') return `sample task keys: ${Object.keys(flat[0]).join(', ')}`;
+  return `top-level keys: ${Object.keys(root).join(', ')}`;
+}
 function summarizeTasks(arr){
   if(!Array.isArray(arr)) return null;
   const today = localISO(new Date());
@@ -1028,8 +1059,15 @@ function summarizeTasks(arr){
 function adaptGTD(raw){
   const root = unwrapGTDRoot(raw);
   if(!root) return null;
-  const household = findTaskList(root, ['household','home','householdTasks','homeTasks']);
-  const church = findTaskList(root, ['church','churchTasks']);
+  let household = findTaskList(root, ['household','home','householdTasks','homeTasks']);
+  let church = findTaskList(root, ['church','churchTasks']);
+  if(!household && !church){
+    const flat = findTaskList(root, ['tasks','items','todos']);
+    if(flat){
+      const split = splitTasksByList(flat);
+      if(split){ household = split.household; church = split.church; }
+    }
+  }
   if(!household && !church) return null;
   return { household: household ? summarizeTasks(household) : null, church: church ? summarizeTasks(church) : null };
 }
@@ -1634,9 +1672,8 @@ $('testGTD').onclick = async ()=>{
       if(g.church) parts.push(`Church: ${g.church.open} open, ${g.church.overdue} overdue`);
       st.textContent = `Connected \u2014 ${parts.join(' \u00b7 ')}`;
     } else {
-      const keys = raw && typeof raw==='object' ? Object.keys(raw).join(', ') : typeof raw;
       st.className='status err';
-      st.textContent = `Connected, but couldn\u2019t find household/church task lists. Top-level keys: ${keys}. Send me this and I\u2019ll adjust the adapter.`;
+      st.textContent = `Connected, but couldn\u2019t split tasks into household/church. ${gtdShapeReport(raw)}. Send me this and I\u2019ll adjust the adapter.`;
     }
   }catch(e){ st.className='status err'; st.textContent = e.message; }
 };
