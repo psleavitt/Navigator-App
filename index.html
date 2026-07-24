@@ -200,6 +200,37 @@ main{max-width:1180px;margin:14px auto 60px;padding:0 22px}
 .setup-hint{color:var(--fog);font-size:15px;line-height:1.6}
 .setup-hint a{color:var(--brass-soft)}
 
+/* ---------- weekly planning ---------- */
+.steps{display:flex;flex-direction:column;gap:14px;max-width:760px}
+.step{background:var(--chart);border:1px solid var(--chart-2);border-radius:var(--radius);padding:20px 22px;transition:opacity .15s,border-color .15s}
+.step.locked{opacity:.45}
+.step.done{border-color:var(--seafoam)}
+.step-head{display:flex;align-items:center;gap:12px;cursor:pointer}
+.step.locked .step-head{cursor:default}
+.step-num{
+  width:28px;height:28px;border-radius:50%;background:var(--chart-2);color:var(--fog);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;flex:none;
+}
+.step.done .step-num{background:var(--seafoam);color:#0E1B2C}
+.step.active .step-num{background:var(--brass);color:#1B1503}
+.step-title{font-family:var(--display);font-size:18px;color:var(--paper);flex:1}
+.step-check{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fog)}
+.step-body{margin-top:16px;padding-left:40px}
+@media (max-width:600px){.step-body{padding-left:0}}
+.step-desc{color:var(--fog);font-size:15px;line-height:1.6;margin-bottom:14px}
+.gtd-counts{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px}
+.gtd-count{font-family:var(--mono);font-size:13px;color:var(--text)}
+.gtd-count b{color:var(--brass-soft)}
+.gtd-count.overdue b{color:var(--signal)}
+.lastfocus{background:var(--ink);border:1px solid var(--chart-2);border-radius:9px;padding:12px 14px;margin-bottom:14px;font-size:14px;color:var(--fog);line-height:1.6}
+.lastfocus b{color:var(--text);display:block;margin-bottom:4px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.focus-inputs{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.focus-inputs input{
+  width:100%;background:var(--ink);border:1px solid var(--chart-2);border-radius:9px;
+  padding:11px 13px;font-size:15px;color:var(--text);font-family:var(--serif);
+}
+.focus-inputs input:focus{border-color:var(--brass);outline:none}
+
 /* ---------- logbook ---------- */
 .logbook{display:flex;flex-direction:column;gap:14px;max-width:760px}
 .entrycard{background:var(--chart);border:1px solid var(--chart-2);border-radius:var(--radius);padding:20px 22px;cursor:pointer;transition:border-color .15s}
@@ -290,6 +321,7 @@ details.adv summary{font-family:var(--mono);font-size:12px;letter-spacing:.1em;t
 
 <nav>
   <button data-view="week" class="on">This Week</button>
+  <button data-view="planning">Plan</button>
   <button data-view="logbook">Logbook</button>
   <button data-view="export">Export</button>
   <button data-view="settings">Settings</button>
@@ -340,6 +372,11 @@ details.adv summary{font-family:var(--mono);font-size:12px;letter-spacing:.1em;t
       </div>
 
     </div>
+  </section>
+
+  <!-- WEEKLY PLANNING -->
+  <section class="view" id="view-planning">
+    <div class="steps" id="planSteps"></div>
   </section>
 
   <!-- LOGBOOK -->
@@ -400,6 +437,17 @@ create policy "navigator open" on navigator_entries
     </div>
 
     <div class="formcard">
+      <h3>GTD connection</h3>
+      <div class="sub">Navigator reads open/overdue task counts (read-only) for the Look Back &amp; Migrate planning step.</div>
+      <div class="frow"><label for="gtdTable">GTD table name</label><input id="gtdTable" placeholder="gtd"></div>
+      <div class="frow"><label for="gtdCodeCol">Sync code column</label><input id="gtdCodeCol" placeholder="sync_code"></div>
+      <div class="frow"><label for="gtdDataCol">Data column (JSON)</label><input id="gtdDataCol" placeholder="data"></div>
+      <div class="frow"><label for="gtdCode">GTD sync code</label><input id="gtdCode" placeholder="your personal GTD sync code"></div>
+      <button class="btn ghost" id="testGTD">Test connection</button>
+      <div class="status" id="gtdStatus"></div>
+    </div>
+
+    <div class="formcard">
       <h3>Passphrase</h3>
       <div class="sub">Changing your passphrase re-encrypts every entry with the new one. There is no recovery if it's forgotten — that's what keeps the journal private.</div>
       <div class="frow"><label for="ppOld">Current passphrase</label><input type="password" id="ppOld" autocomplete="off"></div>
@@ -426,14 +474,21 @@ const LS = {
   settings: 'navigator_settings',
   vault:    'navigator_vault',
   entries:  'navigator_entries_cache',
-  flCache:  'navigator_fl_cache'
+  flCache:  'navigator_fl_cache',
+  gtdCache: 'navigator_gtd_cache'
 };
 
 let settings = load(LS.settings) || {
   url:'', key:'', code:'',
   flTable:'first_light', flCodeCol:'sync_code', flDataCol:'data',
-  navTable:'navigator_entries'
+  navTable:'navigator_entries',
+  gtdTable:'gtd', gtdCodeCol:'sync_code', gtdDataCol:'data', gtdCode:''
 };
+/* backfill new fields for anyone with settings already saved from before GTD support */
+settings.gtdTable   = settings.gtdTable   || 'gtd';
+settings.gtdCodeCol = settings.gtdCodeCol || 'sync_code';
+settings.gtdDataCol = settings.gtdDataCol || 'data';
+settings.gtdCode    = settings.gtdCode    || '';
 let vault   = load(LS.vault);        // {salt, check:{iv,ct}}
 let cryptoKey = null;                // CryptoKey, memory only
 let entries = load(LS.entries) || {}; // id -> {id, week_of, data:{iv,ct}, updated_at}
@@ -652,15 +707,22 @@ async function decryptAll(){
 /* ---------- journal entry ---------- */
 const week = lastCompletedWeek();
 const weekId = localISO(week.start);
+/* the week being planned — starts the day after the week being reviewed ends */
+const nextWeek = {start: addDays(week.end, 1), end: addDays(week.end, 7)};
+const nextWeekId = localISO(nextWeek.start);
 
 function currentBody(){
-  return {
+  const existing = plain[weekId] || {};
+  const body = {
     remember: $('pRemember').value,
     wins:     $('pWins').value,
     struggles:$('pStruggles').value,
     oneUp:    $('oneUp').value,
     oneDown:  $('oneDown').value
   };
+  /* preserve this week's planning data (set during last week's planning step) */
+  if(existing.planning) body.planning = existing.planning;
+  return body;
 }
 function loadCurrentEntry(){
   $('weekLabel').textContent = `Week of ${weekLabel(week)}`;
@@ -931,6 +993,60 @@ function shapeReport(raw){
   return parts.join(' \u2022 ');
 }
 
+/* ---------- GTD adapter (read-only task counts) ---------- */
+function findTaskList(o, keyHints){
+  if(!o || typeof o !== 'object') return null;
+  for(const k of keyHints){ if(Array.isArray(o[k])) return o[k]; }
+  return null;
+}
+function unwrapGTDRoot(raw){
+  let o = raw, depth = 0;
+  while(o && typeof o === 'object' && depth < 4){
+    if(findTaskList(o, ['household','home','householdTasks','homeTasks']) || findTaskList(o, ['church','churchTasks'])) return o;
+    const inner = o.data || o.state || o.payload || o.appData || o.app;
+    if(inner && typeof inner === 'object'){ o = inner; depth++; } else break;
+  }
+  return (o && typeof o === 'object') ? o : null;
+}
+function taskDue(t){
+  const d = t.dueDate ?? t.due_date ?? t.due ?? t.date;
+  return d ? String(d).slice(0,10) : null;
+}
+function taskDone(t){ return !!(t.completed ?? t.done ?? t.isComplete ?? t.checked); }
+function summarizeTasks(arr){
+  if(!Array.isArray(arr)) return null;
+  const today = localISO(new Date());
+  let open = 0, overdue = 0;
+  arr.forEach(t=>{
+    if(!t || typeof t !== 'object' || taskDone(t)) return;
+    open++;
+    const d = taskDue(t);
+    if(d && d < today) overdue++;
+  });
+  return {open, overdue};
+}
+function adaptGTD(raw){
+  const root = unwrapGTDRoot(raw);
+  if(!root) return null;
+  const household = findTaskList(root, ['household','home','householdTasks','homeTasks']);
+  const church = findTaskList(root, ['church','churchTasks']);
+  if(!household && !church) return null;
+  return { household: household ? summarizeTasks(household) : null, church: church ? summarizeTasks(church) : null };
+}
+let gtdStats = null;
+async function fetchGTDCounts(){
+  if(!settings.url || !settings.key || !settings.gtdCode){ gtdStats = null; return null; }
+  try{
+    const rows = await sb(`${settings.gtdTable}?${settings.gtdCodeCol}=eq.${encodeURIComponent(settings.gtdCode)}&select=*`);
+    if(!rows || !rows.length){ gtdStats = null; return null; }
+    let raw = rows[0][settings.gtdDataCol] ?? rows[0];
+    if(typeof raw === 'string'){ try{ raw = JSON.parse(raw); }catch(e){} }
+    store(LS.gtdCache, raw);
+    gtdStats = adaptGTD(raw);
+    return gtdStats;
+  }catch(e){ gtdStats = null; return null; }
+}
+
 /* ---------- snapshot computations ---------- */
 function daysBetween(start, end){
   const out = []; let d = new Date(start);
@@ -1178,6 +1294,109 @@ function renderSuggestions(s){
 }
 function fillField(id, v){ $(id).value = v; $(id).dispatchEvent(new Event('input')); }
 
+/* ---------- weekly planning ---------- */
+const PLAN_STEPS = [
+  {key:'slate',     title:'Clear the Slate',       desc:'Scan email and Teams for hidden tasks. Brain dump, then sort items into your Work tracker or GTD (household/church).'},
+  {key:'lookback',  title:'Look Back & Migrate',    desc:'Review last week\u2019s calendar. Check off wins in your Work tracker, and glance at what\u2019s open or overdue in GTD.'},
+  {key:'goalbridge',title:'Goal Bridge',            desc:'Review the Position Report, then set your top 2\u20133 needle-movers for next week.'},
+  {key:'horizon',   title:'Horizon Scan',           desc:'Look at next week\u2019s calendar for pre-work or logistics. Glance further out for deadlines or travel.'},
+  {key:'timeblock', title:'Time-Block',             desc:'Adjust this week\u2019s exceptions around your recurring blocks, and confirm Flex time can absorb any overflow.'}
+];
+function blankPlanning(){ return {focus:['','',''], checklist:{}}; }
+function planningFor(id){
+  const p = plain[id];
+  return (p && p.planning) ? p.planning : blankPlanning();
+}
+let planTimer = null;
+async function savePlanning(patch){
+  const existing = plain[nextWeekId] || {};
+  const prev = existing.planning || blankPlanning();
+  const planning = {
+    focus: patch.focus || prev.focus || ['','',''],
+    checklist: {...prev.checklist, ...(patch.checklist||{})}
+  };
+  const body = {...existing, planning};
+  plain[nextWeekId] = body;
+  const data = await encryptJSON(body);
+  entries[nextWeekId] = {id:nextWeekId, week_of:nextWeekId, data, updated_at:new Date().toISOString()};
+  store(LS.entries, entries);
+  if(sbReady() && !vaultConflict){
+    try{ await pushRow(entries[nextWeekId]); }catch(e){}
+  }
+}
+function gtdCountsHTML(){
+  if(!settings.gtdCode) return `<div class="none">Add a GTD sync code in <a href="#" onclick="showView('settings');return false;" style="color:var(--brass-soft)">Settings</a> to see counts.</div>`;
+  if(!gtdStats) return `<div class="none">Couldn\u2019t load GTD counts \u2014 check the connection in Settings.</div>`;
+  const parts = [];
+  if(gtdStats.household) parts.push(`<span class="gtd-count${gtdStats.household.overdue?' overdue':''}">Household: <b>${gtdStats.household.open}</b> open${gtdStats.household.overdue?`, <b>${gtdStats.household.overdue}</b> overdue`:''}</span>`);
+  if(gtdStats.church) parts.push(`<span class="gtd-count${gtdStats.church.overdue?' overdue':''}">Church: <b>${gtdStats.church.open}</b> open${gtdStats.church.overdue?`, <b>${gtdStats.church.overdue}</b> overdue`:''}</span>`);
+  return parts.join('') || `<div class="none">No task lists found.</div>`;
+}
+async function renderPlanning(){
+  const planning = planningFor(nextWeekId);
+  const checklist = planning.checklist || {};
+  let activeIdx = PLAN_STEPS.findIndex(s => !checklist[s.key]);
+  if(activeIdx === -1) activeIdx = PLAN_STEPS.length;
+
+  const gtdPromise = fetchGTDCounts();
+  const lastFocus = ((plain[weekId] && plain[weekId].planning && plain[weekId].planning.focus) || []).filter(f=>f && f.trim());
+
+  const html = PLAN_STEPS.map((s,i)=>{
+    const state = checklist[s.key] ? 'done' : (i===activeIdx ? 'active' : 'locked');
+    const checkLabel = checklist[s.key] ? '\u2713 Done \u2014 tap to reopen' : (state==='active' ? 'Mark done' : 'Locked');
+    let body = '';
+    if(state !== 'locked'){
+      body += `<div class="step-desc">${s.desc}</div>`;
+      if(s.key === 'lookback') body += `<div class="gtd-counts" id="gtdCounts">${gtdCountsHTML()}</div>`;
+      if(s.key === 'goalbridge'){
+        body += lastFocus.length
+          ? `<div class="lastfocus"><b>Last week\u2019s focus</b>${lastFocus.map(escapeHTML).join('<br>')}</div>`
+          : `<div class="lastfocus"><b>Last week\u2019s focus</b><i>Not set</i></div>`;
+        body += `<div class="focus-inputs">
+          <input class="focusInput" placeholder="Needle-mover 1" value="${escapeHTML(planning.focus[0]||'')}">
+          <input class="focusInput" placeholder="Needle-mover 2" value="${escapeHTML(planning.focus[1]||'')}">
+          <input class="focusInput" placeholder="Needle-mover 3 (optional)" value="${escapeHTML(planning.focus[2]||'')}">
+        </div>`;
+      }
+    }
+    return `<div class="step ${state}" data-key="${s.key}">
+      <div class="step-head" onclick="toggleStep('${s.key}')">
+        <div class="step-num">${checklist[s.key] ? '\u2713' : i+1}</div>
+        <div class="step-title">${s.title}</div>
+        <div class="step-check">${checkLabel}</div>
+      </div>
+      <div class="step-body">${body}</div>
+    </div>`;
+  }).join('') + (activeIdx === PLAN_STEPS.length
+    ? `<div class="panel"><div class="setup-hint">Planning complete for the week of ${weekLabel(nextWeek)}. Nice work \u2014 see you Friday.</div></div>` : '');
+
+  $('planSteps').innerHTML = html;
+  document.querySelectorAll('.focusInput').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      clearTimeout(planTimer);
+      planTimer = setTimeout(()=>{
+        const vals = [...document.querySelectorAll('.focusInput')].map(x=>x.value);
+        savePlanning({focus:vals});
+      }, 900);
+    });
+  });
+
+  await gtdPromise;
+  const el = $('gtdCounts');
+  if(el) el.innerHTML = gtdCountsHTML();
+}
+function toggleStep(key){
+  const planning = planningFor(nextWeekId);
+  const checklist = {...planning.checklist};
+  const idx = PLAN_STEPS.findIndex(s=>s.key===key);
+  let activeIdx = PLAN_STEPS.findIndex(s => !checklist[s.key]);
+  if(activeIdx === -1) activeIdx = PLAN_STEPS.length;
+  if(idx > activeIdx) return; /* locked — ignore */
+  checklist[key] = !checklist[key];
+  savePlanning({checklist});
+  renderPlanning();
+}
+
 /* ---------- logbook ---------- */
 function renderLogbook(){
   const ids = Object.keys(plain).sort().reverse();
@@ -1204,6 +1423,7 @@ function openEntry(id){
   $('logbookList').innerHTML = '';
   $('entryDetail').innerHTML = `<div class="entryfull">
     <div class="ew" style="font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--brass);margin-bottom:16px">Week of ${weekLabel(w)}</div>
+    ${(p.planning && p.planning.focus && p.planning.focus.filter(f=>f&&f.trim()).length) ? `<h4>This week\u2019s focus</h4><p>${p.planning.focus.filter(f=>f&&f.trim()).map(escapeHTML).join('<br>')}</p>` : ''}
     ${p.remember ? `<h4>Worth remembering</h4><p>${escapeHTML(p.remember)}</p>` : ''}
     ${p.wins ? `<h4>Wins</h4><p>${escapeHTML(p.wins)}</p>` : ''}
     ${p.struggles ? `<h4>Struggles</h4><p>${escapeHTML(p.struggles)}</p>` : ''}
@@ -1280,6 +1500,11 @@ async function exportDocx(ids){
   ids.forEach(id => {
     const p = plain[id];
     children.push(new Paragraph({text:entryLabel(id), heading:HeadingLevel.HEADING_1, spacing:{before:400}}));
+    const focus = ((p.planning && p.planning.focus) || []).filter(f=>f && f.trim());
+    if(focus.length){
+      children.push(new Paragraph({text:'This week\u2019s focus', heading:HeadingLevel.HEADING_2}));
+      focus.forEach(f => children.push(new Paragraph({children:[new TextRun({text:'\u2022 '+f, size:23})], spacing:{after:80}})));
+    }
     if(p.remember)  section('Worth remembering', p.remember);
     if(p.wins)      section('Wins', p.wins);
     if(p.struggles) section('Struggles', p.struggles);
@@ -1300,6 +1525,8 @@ function exportDocFallback(ids){
   ids.forEach(id => {
     const p = plain[id];
     html += `<h1 style="page-break-before:always">${entryLabel(id)}</h1>`;
+    const focus = ((p.planning && p.planning.focus) || []).filter(f=>f && f.trim());
+    if(focus.length) html += `<h2>This week's focus</h2><ul>${focus.map(f=>`<li>${escapeHTML(f)}</li>`).join('')}</ul>`;
     if(p.remember)  html += `<h2>Worth remembering</h2><p>${escapeHTML(p.remember).replace(/\n/g,'<br>')}</p>`;
     if(p.wins)      html += `<h2>Wins</h2><p>${escapeHTML(p.wins).replace(/\n/g,'<br>')}</p>`;
     if(p.struggles) html += `<h2>Struggles</h2><p>${escapeHTML(p.struggles).replace(/\n/g,'<br>')}</p>`;
@@ -1320,6 +1547,7 @@ function downloadBlob(blob, name){
 function fillSettings(){
   $('sUrl').value = settings.url; $('sKey').value = settings.key; $('sCode').value = settings.code;
   $('flTable').value = settings.flTable; $('flCodeCol').value = settings.flCodeCol; $('flDataCol').value = settings.flDataCol;
+  $('gtdTable').value = settings.gtdTable; $('gtdCodeCol').value = settings.gtdCodeCol; $('gtdDataCol').value = settings.gtdDataCol; $('gtdCode').value = settings.gtdCode;
 }
 $('saveSettings').onclick = async ()=>{
   settings.url = $('sUrl').value.trim(); settings.key = $('sKey').value.trim(); settings.code = $('sCode').value.trim();
@@ -1384,6 +1612,34 @@ $('testFL').onclick = async ()=>{
     }
   }catch(e){ st.className='status err'; st.textContent = e.message; }
 };
+$('testGTD').onclick = async ()=>{
+  const st = $('gtdStatus');
+  settings.gtdTable = $('gtdTable').value.trim() || settings.gtdTable;
+  settings.gtdCodeCol = $('gtdCodeCol').value.trim() || settings.gtdCodeCol;
+  settings.gtdDataCol = $('gtdDataCol').value.trim() || settings.gtdDataCol;
+  settings.gtdCode = $('gtdCode').value.trim();
+  store(LS.settings, settings);
+  if(!settings.url || !settings.key || !settings.gtdCode){ st.className='status err'; st.textContent='Add Supabase URL/key above, plus a GTD sync code.'; return; }
+  st.className='status info'; st.textContent='Testing\u2026';
+  try{
+    const rows = await sb(`${settings.gtdTable}?${settings.gtdCodeCol}=eq.${encodeURIComponent(settings.gtdCode)}&select=*`);
+    if(!rows.length) throw new Error(`Connected, but no row in \u201c${settings.gtdTable}\u201d matches this sync code.`);
+    let raw = rows[0][settings.gtdDataCol] ?? rows[0];
+    if(typeof raw === 'string'){ try{ raw = JSON.parse(raw); }catch(e){} }
+    const g = adaptGTD(raw);
+    if(g){
+      st.className='status ok';
+      const parts = [];
+      if(g.household) parts.push(`Household: ${g.household.open} open, ${g.household.overdue} overdue`);
+      if(g.church) parts.push(`Church: ${g.church.open} open, ${g.church.overdue} overdue`);
+      st.textContent = `Connected \u2014 ${parts.join(' \u00b7 ')}`;
+    } else {
+      const keys = raw && typeof raw==='object' ? Object.keys(raw).join(', ') : typeof raw;
+      st.className='status err';
+      st.textContent = `Connected, but couldn\u2019t find household/church task lists. Top-level keys: ${keys}. Send me this and I\u2019ll adjust the adapter.`;
+    }
+  }catch(e){ st.className='status err'; st.textContent = e.message; }
+};
 $('changePP').onclick = async ()=>{
   const st = $('ppStatus');
   if(vaultConflict){
@@ -1418,6 +1674,7 @@ function showView(v){
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on', s.id==='view-'+v));
   if(v==='logbook') renderLogbook();
   if(v==='settings') fillSettings();
+  if(v==='planning') renderPlanning();
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
